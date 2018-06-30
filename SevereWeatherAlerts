@@ -1,0 +1,178 @@
+#! /usr/bin/python
+
+# Author - Redryno
+# Email  - redryno.123@gmail.com
+
+# Requirements - discord, weatheralerts
+
+# Info - This program will post National Weather Service alerts in text to Discord chat.
+#	This can be used for multiple counties, and multiple channels per county.  I wouldn't
+#	overload it with too many counties or too many channels as it will run very slow.
+#	From my understanding this is from mixing sync and async programming methods.
+
+import asyncio, discord, time, threading, readline
+from weatheralerts import WeatherAlerts
+import logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s') 
+logging.disable(logging.INFO) # NOTSET, DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+################# EDIT THIS INFO #################
+
+# enter your token below, in place of <token>
+token = '<token>'
+# Counties = [{"<County for alerts>":['<Channel1 ID>','<Channel2 ID>', etc...]},etc...]
+Counties = [{"St. Charles":['462368546890973184', '462368611374333981']},{"St. Louis":['462370894812151846','462370954723590145']}]
+# State for alerts
+currentState = "MO"
+# high_priority_repost_time is for "Critical" events, such as a Thunderstorm/Tornato Warning
+low_priority_repost_time = 2000 * 60
+high_priority_repost_time = 2000 * 60
+
+##################################################
+
+Started = time.time()
+Posted = [] # [alert.severity, alert.areadesc, alert.title, alert.summary, high_priority_repost_time, time posted]
+loop = asyncio.new_event_loop()
+bot = discord.Client()
+bot_token = True
+message_queue = asyncio.Queue()
+
+def bot_thread(loop, bot, bot_token, message_queue, channel_id):
+	asyncio.set_event_loop(loop)
+
+	@bot.event
+	async def on_ready():
+		while True:
+			data = await message_queue.get()
+			event = data[0]
+			message = data[1]
+			channel_id = data[2]
+
+			try:
+				await bot.send_message(bot.get_channel(channel_id), message)
+			except:
+				pass
+
+			event.set()
+
+	@bot.event
+	async def on_message(message):
+		# we do not want the bot to reply to itself
+		if message.author == bot.user:
+			return
+
+		if message.content.startswith('!hello'):
+			msg = 'Hello {0.author.mention}!'.format(message)
+			await bot.send_message(message.channel, msg)
+
+	bot.run(token, bot = bot_token)
+
+for i in Counties:
+	for x, channel_id_list in i.items():
+		for channel_id in channel_id_list:
+			thread = threading.Thread(target = bot_thread, args = (loop, bot, bot_token, message_queue, channel_id), daemon = True)
+			thread.start()
+
+def send(channel_id, message):
+	event = threading.Event()
+
+	message_queue.put_nowait([event, message, channel_id])
+
+	event.wait()
+
+print('Bot logging in...')
+for i in Counties:
+	for x, channel_id_list in i.items():
+		for channel_id in channel_id_list:
+			msg = "SevereWeatherAlerts has been started for {} County.".format(x)
+			send(channel_id, msg)
+
+
+def CheckForAlerts():
+	global Started
+	global Posted
+	# once every 24hrs clear the Posted list
+	if (time.time() - Started) >= 86400:
+		Posted = []
+		Started = time.time()
+	nws = WeatherAlerts(state=currentState)	# setup weather
+	logging.warning('-------------------------------------------------------------------')
+	for alert in nws.alerts:
+		for i in Counties:
+			for key, values in i.items():
+				currentCounty = key
+				if currentCounty in alert.areadesc:
+					logging.warning('Found a {} in {}'.format(alert.event, alert.areadesc))
+			
+					if "Minor" in alert.severity:
+						logging.warning("---- {0}\n{1}:  {2}\n{3}".format(
+						alert.severity, alert.areadesc, alert.title, alert.summary))
+						info = [alert.severity, currentCounty, alert.title, alert.summary, low_priority_repost_time]
+						Check_If_Alert_Has_Posted(info, values)
+			
+					elif "Moderate" in alert.severity:
+						logging.warning("---- {0}\n{1}:  {2}\n{3}".format(
+						alert.severity, alert.areadesc, alert.title, alert.summary))
+						info = [alert.severity, currentCounty, alert.title, alert.summary, low_priority_repost_time]
+						Check_If_Alert_Has_Posted(info, values)
+
+					elif alert.severity in ["Major", "Severe"]:
+						logging.error("---- {0}\n{1}:  {2}\n{3}".format(
+						alert.severity, alert.areadesc, alert.title, alert.summary))
+						info = [alert.severity, currentCounty, alert.title, alert.summary, high_priority_repost_time]
+						Check_If_Alert_Has_Posted(info, values)
+					else:
+						logging.error("---- {0}\n{1}:  {2}\n{3}".format(
+						alert.severity, alert.areadesc, alert.title, alert.summary))
+				else:
+					logging.info('Found a {} in {}'.format(alert.event, alert.areadesc))
+
+def Check_If_Alert_Has_Posted(info, channel_id_list):
+	tempList1 = []
+	tempList1.append(info[0])
+	tempList1.append(info[1])
+	tempList1.append(info[2])
+	tempList3 = []
+	for item in Posted:
+		tempList2 = []
+		tempList2.append(item[0])
+		tempList2.append(item[1])
+		tempList2.append(item[2])
+		tempList3.append(tempList2)
+	if tempList1 not in tempList3:
+		msg = "**{}** - {}".format(info[2], info[3])
+		for channel_id in channel_id_list:
+			send(channel_id, msg)
+			time.sleep(.1)
+		logging.debug("Found a new warning. \nT1 = {}, \nT3 = {}".format(tempList1,tempList3))
+		info.append(time.time())
+		Posted.append(info)
+	elif tempList1 in tempList3:
+		for item in Posted:
+			if info[0] == item[0]:
+				if info[2] == item[2]:
+					if (time.time() - item[5]) >= item[4]:
+						msg = "**{}** - {}".format(info[2], info[3])
+						for channel_id in channel_id_list:
+							send(channel_id, msg)
+							time.sleep(.1)
+						logging.debug("Found warning previously posted, reposting because timer is up.")
+						Posted.remove(item)
+						info.append(time.time())
+						Posted.append(info)
+					else:
+						logging.debug("\n\nTime remaining until repeat: {}\n".format(item[4] - (time.time() - item[5])))
+
+try:
+	kek = False
+	while not kek:
+		time.sleep(0.1)
+
+		if bot._is_ready.is_set(): # wait until the ready event
+			while True:
+				CheckForAlerts()
+				time.sleep(1)
+
+			kek = True
+except KeyboardInterrupt:
+	pass
