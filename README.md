@@ -23,7 +23,7 @@ weatheralerts
 
 7 - In the script, edit the state and county information.  For the channels you would like to post to you will
 
-    need the channel ID, the channel IDs are associated with each county.
+   need the channel ID, the channel IDs are associated with each county.
 
 # Warning
 Adding more counties/channels will make the bot slower.
